@@ -52,7 +52,7 @@ bash azure-vm-wizard.sh --help
 |---|---|
 | `--create` / `--manage` / `--cost` | 直接进入开新机器 / 管理机器 / 查花费 |
 | `--region japaneast --size B2ats_v2 --image ubuntu` | 跳过对应的问题 |
-| `--name 机器名 --rg 资源组 --user 用户名 --key 私钥路径` | 同上 |
+| `--name 机器名 --rg 资源组 --user 用户名 --key 私钥路径` | 同上；`--manage --name 机器名` 直接管理这台 |
 | `--ports 80,443` | 额外开放端口，`none` 不开 |
 | `--shutdown 23:00` | 每天按本机时间自动关机，`none` 不开 |
 | `--dry-run` | 只演练，打印命令，不创建 |
@@ -88,6 +88,23 @@ AZW_TTY=/tmp/ans.txt bash azure-vm-wizard.sh --dry-run
 
 ## 发布记录
 
+### v1.1.0（2026-11-03）
+
+- `--manage --name 机器名` 直接选中要管理的机器
+- 创建时间提示改为 3 到 5 分钟（实测约 4 分半）
+- 登录说明里加上 ssh 超时的排查提示
+
+用脚本在 koreacentral 真实走了一遍完整流程（全参数 + `--yes`），已实测：
+
+- 创建 B2ats_v2 + Ubuntu 24.04，新生成的钥匙能登录
+- 开放 80、443 端口：防火墙规则已生效（优先级 1010）
+- 每天 23:00 自动关机：Azure 里的关机计划为 UTC 15:00，已启用
+- 管理菜单：停止（解除分配）、启动（公网 IP 不变）、删除时输错名字会取消、输对后整组删除完成
+- 实测中作者本机所在网络连不上这台机器的 22 端口，从另外两台云服务器都能连上，判断是本地网络问题而不是脚本问题
+
+未实测：管理菜单里的"设置或取消每天自动关机"；Cloud Shell、Linux、Windows 上的交互。
+
+
 ### v1.0.0（2026-11-03）
 
 首个版本，发布到 GitHub 公开仓库 [Arcueid0221/azure-vm-wizard](https://github.com/Arcueid0221/azure-vm-wizard)。已实测（macOS，bash 3.2，Azure CLI 2.91.0，学生订阅）：
@@ -101,7 +118,7 @@ AZW_TTY=/tmp/ans.txt bash azure-vm-wizard.sh --dry-run
 
 未实测：
 
-- 真正创建（脚本里的 `az vm create` 参数与作者手动建机时一致，但没有通过脚本跑过）、开放端口、自动关机、停止、启动、删除
+- 真正创建、开放端口、自动关机、停止、启动、删除（已在 v1.1.0 实测）
 - Cloud Shell、Linux、Windows 上运行；真实终端（`/dev/tty`）下的交互（`bash <(curl …)` 只实测了下载和 `--version`）
 - 未登录时自动 `az login`、订阅没有区域策略时手动输入区域、计算服务未注册时的注册步骤
 - Debian 和 ARM 镜像只确认了镜像存在

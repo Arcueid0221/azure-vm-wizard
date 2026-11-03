@@ -4,7 +4,7 @@
 # 依赖 az、jq、curl（Azure Cloud Shell 里都自带）。兼容 macOS 自带的 bash 3.2。
 # 用法见 bash azure-vm-wizard.sh --help
 # shellcheck disable=SC2015,SC2016  # A && ok || explain：ok 不会失败；$100 是字面文字
-VERSION=1.0.0
+VERSION=1.1.0
 set -uo pipefail
 export AZURE_CORE_ONLY_SHOW_ERRORS=true PYTHONWARNINGS=ignore
 
@@ -30,7 +30,7 @@ Run without options for the interactive wizard; press Enter to accept each recom
 
   --create | --manage | --cost   直接进入：开新机器 / 管理机器 / 查花费
   --subscription 名称或ID        --region japaneast       --size Standard_B2ats_v2
-  --image ubuntu|debian          --name 机器名            --rg 资源组
+  --image ubuntu|debian          --name 机器名（--manage 时直接选中这台）  --rg 资源组
   --user 登录用户名              --key 私钥路径           --ports 80,443（none 不开）
   --shutdown 23:00|none          每天自动关机（本机时区）
   --dry-run                      只打印将执行的命令，不创建
@@ -459,7 +459,7 @@ create_vm() {
     ok "$(t '已生成钥匙' 'Key created'): $KEY"
   fi
   err=$(mktemp)
-  info "$(t '创建中，大约 2 到 4 分钟……' 'Creating, about 2-4 minutes...')"
+  info "$(t '创建中，大约 3 到 5 分钟……' 'Creating, about 3-5 minutes...')"
   "${cmd_rg[@]}" 2>"$err" || { explain_error "$err"; rm -f "$err"; exit 1; }
   "${cmd_vm[@]}" 2>"$err" || { explain_error "$err"; rm -f "$err"
     info "$(t "资源组 $RG 可能已建好但是空的，可以用 --manage 删掉，或者重新运行时沿用它。" "Resource group $RG may exist but be empty; delete it with --manage or reuse it.")"; exit 1; }
@@ -483,6 +483,8 @@ login_help() {
   info "      HostName $ip"
   info "      User $user"
   info "      IdentityFile $key"
+  info ""
+  info "$(t 'ssh 连不上（超时）？刚建好的机器等 1 分钟再试；学校、公司的网络可能封了 22 端口，换手机热点或 Cloud Shell 试试。' 'SSH timing out? Wait a minute after creation; school or office networks may block port 22, so try a phone hotspot or Cloud Shell.')"
 }
 
 after_create() {
@@ -526,7 +528,14 @@ flow_manage() {
     names+=("$name"); rgs+=("$rg")
     labels+=("$(printf '%-16s %-20s %-14s %-20s %s' "$name" "$size" "$loc" "${state:-?}" "${ip:-}")")
   done <<<"$rows"
-  i=$(( $(pick "$(t '选一台机器：' 'Pick a VM:')" 1 "${labels[@]}") - 1 ))
+  if [ -n "$OPT_NAME" ]; then
+    i=-1
+    for n in "${!names[@]}"; do [ "${names[$n]}" = "$OPT_NAME" ] && i=$n; done
+    [ "$i" -ge 0 ] || die "$(t "找不到机器：$OPT_NAME" "VM not found: $OPT_NAME")"
+    info "$(t '机器' 'VM'): ${labels[$i]}"
+  else
+    i=$(( $(pick "$(t '选一台机器：' 'Pick a VM:')" 1 "${labels[@]}") - 1 ))
+  fi
   VM=${names[$i]}; RG=${rgs[$i]}
 
   act=$(pick "$(t "对 $VM 做什么：" "What to do with $VM:")" 1 \
