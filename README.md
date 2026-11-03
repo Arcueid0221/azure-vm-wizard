@@ -18,7 +18,7 @@ English: an interactive Azure VM wizard for beginners, especially Azure for Stud
 ### 推荐：在 Azure Cloud Shell 里运行（什么都不用装）
 
 1. 打开 [Azure 控制台](https://portal.azure.com)，点右上角的 Cloud Shell 图标，选 **Bash**。
-2. 粘贴运行（未实测，仓库发布后补测）：
+2. 粘贴运行（已在 Mac 上实测能下载并运行；Cloud Shell 里的交互未实测）：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Arcueid0221/azure-vm-wizard/main/azure-vm-wizard.sh)
@@ -90,7 +90,7 @@ AZW_TTY=/tmp/ans.txt bash azure-vm-wizard.sh --dry-run
 
 ### v1.0.0（2026-11-03）
 
-首个版本。已实测（macOS，bash 3.2，Azure CLI 2.91.0，学生订阅）：
+首个版本，发布到 GitHub 公开仓库 [Arcueid0221/azure-vm-wizard](https://github.com/Arcueid0221/azure-vm-wizard)。已实测（macOS，bash 3.2，Azure CLI 2.91.0，学生订阅）：
 
 - shellcheck 无告警
 - 交互开机流程（默认回答 + 开端口 + 自动关机）演练到最后一步，时区换算正确（本机 23:00 → UTC 1500）
@@ -102,6 +102,6 @@ AZW_TTY=/tmp/ans.txt bash azure-vm-wizard.sh --dry-run
 未实测：
 
 - 真正创建（脚本里的 `az vm create` 参数与作者手动建机时一致，但没有通过脚本跑过）、开放端口、自动关机、停止、启动、删除
-- Cloud Shell、Linux、Windows 上运行；`bash <(curl …)` 方式；真实终端（`/dev/tty`）下的交互
+- Cloud Shell、Linux、Windows 上运行；真实终端（`/dev/tty`）下的交互（`bash <(curl …)` 只实测了下载和 `--version`）
 - 未登录时自动 `az login`、订阅没有区域策略时手动输入区域、计算服务未注册时的注册步骤
 - Debian 和 ARM 镜像只确认了镜像存在
