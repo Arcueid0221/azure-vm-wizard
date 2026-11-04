@@ -14,6 +14,8 @@
 
 English: an interactive Azure VM wizard for beginners, especially Azure for Students. Run it with `--lang en`.
 
+感谢 [LINUX DO](https://linux.do) 社区。
+
 ## 怎么运行
 
 ### 推荐：在 Azure Cloud Shell 里运行（什么都不用装）
