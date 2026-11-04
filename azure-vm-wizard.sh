@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Azure 开机向导 / Azure VM wizard
-# 面向新手：选订阅 → 注册计算服务 → 选区域 → 看配额和价格 → 选机型 → 费用清单 → 演练 → 创建；另有管理和查花费菜单。
+# 面向新手：选订阅 → 注册计算服务 → 选区域 → 看配额和价格 → 选机型 → 费用清单 → 演练 → 创建；另有管理（含换公网 IP）和查花费菜单。
 # 依赖 az、jq、curl（Azure Cloud Shell 里都自带）。兼容 macOS 自带的 bash 3.2。
 # 用法见 bash azure-vm-wizard.sh --help
 # shellcheck disable=SC2015,SC2016  # A && ok || explain：ok 不会失败；$100 是字面文字
-VERSION=1.1.0
+VERSION=1.2.0
 set -uo pipefail
 export AZURE_CORE_ONLY_SHOW_ERRORS=true PYTHONWARNINGS=ignore
 
@@ -110,7 +110,7 @@ pick() {
     i=$((i + 1))
   done
   while :; do
-    if [ "$def" -gt 0 ]; then n=$(read_in "$(t "选择编号（回车 = $def）: " "Choose number (Enter = $def): ")")
+    if [ "$def" -gt 0 ]; then n=$(read_in "$(t "选择编号（回车 = ${def}）: " "Choose number (Enter = $def): ")")
     else n=$(read_in "$(t '选择编号: ' 'Choose number: ')"); fi
     [ -z "$n" ] && [ "$def" -gt 0 ] && n=$def
     if [[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le $# ]; then echo "$n"; return; fi
@@ -207,7 +207,7 @@ fetch_price() {
 check_env() {
   local c
   for c in az jq curl; do
-    command -v "$c" >/dev/null || die "$(t "缺少 $c。最省事的办法：在 Azure 控制台右上角打开 Cloud Shell（选 Bash）运行本脚本，什么都不用装。" "Missing $c. Easiest fix: run this script in Azure Cloud Shell (Bash), which has everything.")"
+    command -v "$c" >/dev/null || die "$(t "缺少 ${c}。最省事的办法：在 Azure 控制台右上角打开 Cloud Shell（选 Bash）运行本脚本，什么都不用装。" "Missing $c. Easiest fix: run this script in Azure Cloud Shell (Bash), which has everything.")"
   done
   if ! az account show -o none 2>/dev/null; then
     info "$(t '还没登录 Azure，马上打开浏览器登录……' 'Not logged in; opening the browser to sign in...')"
@@ -251,7 +251,7 @@ ensure_compute() {
   state=$(azs provider show -n Microsoft.Compute --query registrationState -o tsv)
   [ "$state" = Registered ] && return
   say "$(t '注册计算服务' 'Register compute service')"
-  info "$(t "计算服务（Microsoft.Compute）状态：$state。没注册时配额查出来是空的，看起来就像什么机器都开不了。注册免费，不会创建任何东西。" "Microsoft.Compute is $state. Until registered, quotas look empty. Registering is free and creates nothing.")"
+  info "$(t "计算服务（Microsoft.Compute）状态：${state}。没注册时配额查出来是空的，看起来就像什么机器都开不了。注册免费，不会创建任何东西。" "Microsoft.Compute is $state. Until registered, quotas look empty. Registering is free and creates nothing.")"
   [ -n "$OPT_YES" ] || confirm "$(t '现在注册' 'Register now')" || die "$(t '未注册，无法继续' 'Not registered; cannot continue')"
   info "$(t '注册中，通常要 1 到 3 分钟……' 'Registering, usually 1-3 minutes...')"
   azs provider register -n Microsoft.Compute --wait || die "$(t '注册失败' 'Registration failed')"
@@ -543,6 +543,7 @@ flow_manage() {
     "$(t '停止（解除分配）：停止计机器的钱，硬盘和 IP 照样收费' 'Stop (deallocate): stops VM charges; disk and IP still bill')" \
     "$(t '启动' 'Start')" \
     "$(t '设置或取消每天自动关机' 'Set or remove daily auto-shutdown')" \
+    "$(t '换公网 IP：多建几个测延迟，留最快的' 'Change public IP: try a few, keep the fastest')" \
     "$(t '删除整台机器（连同硬盘、IP，彻底停止计费）' 'Delete the VM with disk and IP (stops all charges)')" \
     "$(t '返回' 'Back')")
   case $act in
@@ -554,7 +555,8 @@ flow_manage() {
     2) info "$(t '停止中……' 'Deallocating...')"; azs vm deallocate -g "$RG" -n "$VM" -o none && ok "$(t '已停止（解除分配）' 'Deallocated')" ;;
     3) info "$(t '启动中……' 'Starting...')"; azs vm start -g "$RG" -n "$VM" -o none && ok "$(t '已启动（公网 IP 不变）' 'Started (same public IP)')" ;;
     4) OPT_SHUTDOWN=""; choose_extras_shutdown_only ;;
-    5) delete_vm ;;
+    5) change_ip ;;
+    6) delete_vm ;;
     *) ;;
   esac
 }
@@ -574,10 +576,10 @@ delete_vm() {
   say "$(t "删除 $VM" "Delete $VM")"
   others=$(azs vm list -g "$RG" --query "[?name!='$VM'].name" -o tsv)
   if [ -n "$others" ]; then
-    warn "$(t "资源组 $RG 里还有别的机器（$others），只删这一台。" "Resource group $RG has other VMs ($others); deleting only this one.")"
+    warn "$(t "资源组 $RG 里还有别的机器（${others}），只删这一台。" "Resource group $RG has other VMs ($others); deleting only this one.")"
     info "$(t '将删除：机器本身，以及创建时设置了"随机器删除"的系统盘和网卡。公网 IP 和防火墙规则会留下，需要在控制台另删。' 'Deletes the VM plus disk/NIC marked delete-with-VM. Public IP and NSG stay.')"
   else
-    info "$(t "将删除整个资源组 $RG，里面的东西如下：" "The whole resource group $RG will be deleted:")"
+    info "$(t "将删除整个资源组 ${RG}，里面的东西如下：" "The whole resource group $RG will be deleted:")"
     azs resource list -g "$RG" --query "[].[type,name]" -o tsv | sed 's/^/    /' >&2
   fi
   warn "$(t '删除后无法恢复，机器里的数据会全部丢失。' 'This cannot be undone; all data on the VM is lost.')"
@@ -587,6 +589,153 @@ delete_vm() {
     azs vm delete -g "$RG" -n "$VM" --yes -o none && ok "$(t '已删除' 'Deleted')"
   else
     azs group delete -n "$RG" --yes --no-wait && ok "$(t '已开始删除，几分钟后完成。' 'Deletion started; it finishes in a few minutes.')"
+  fi
+}
+
+# ================= 换公网 IP =================
+# tcp_ms IP 端口：TCP 连 5 次取中间值（毫秒，整数），连不上输出空
+tcp_ms() {
+  local i s all=""
+  for i in 1 2 3 4 5; do
+    s=$(curl -s -o /dev/null --noproxy '*' --connect-timeout 3 --max-time 3 -w '%{time_connect}' "telnet://$1:$2" </dev/null 2>/dev/null)
+    awk -v s="${s:-0}" 'BEGIN{exit !(s > 0)}' && all="$all $(awk -v s="$s" 'BEGIN{printf "%d", s * 1000 + 0.5}')"
+  done
+  # shellcheck disable=SC2086
+  [ -n "$all" ] && printf '%s\n' $all | sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}'
+}
+
+# wait_up IP 端口：等新 IP 生效，最多约 2 分钟
+wait_up() {
+  local i
+  for i in $(seq 1 40); do
+    [ -n "$(curl -s -o /dev/null --noproxy '*' --connect-timeout 2 --max-time 2 -w '%{time_connect}' "telnet://$1:$2" </dev/null 2>/dev/null | awk '$1>0')" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# measure IP：自动测，或者（网络被代理接管时）让用户自己测了填进来
+measure() {
+  if [ -n "$IP_MANUAL" ]; then
+    read_in "$(t "  现在挂的是 $1，用你自己的办法测延迟，输入毫秒数（回车 = 跳过）: " "  Now on $1. Measure it yourself and enter ms (Enter = skip): ")" | tr -cd '0-9'
+  else
+    wait_up "$1" "$IP_PORT" || { warn "$(t "  $1 两分钟内没连上" "  $1 not reachable within 2 minutes")"; return; }
+    tcp_ms "$1" "$IP_PORT"
+  fi
+}
+
+# 把机器的主网卡配置指向某个公网 IP（节点会断几秒到几十秒）
+attach_ip() { az network nic ip-config update --ids "$IP_CFG_ID" --public-ip-address "$1" -o none; }
+
+change_ip() {
+  local nic_id cfg old_id old_ip zone loc used lim free n i k best err name made ms addr
+  local ids=() names=() addrs=() mss=() labels=() del=()
+  say "$(t "换公网 IP：$VM" "Change public IP: $VM")"
+  info "$(t 'Azure 没有"换 IP"按钮，只能新建公网 IP 换上去，地址是机房地址池里随机分的。同一区域不同地址段的延迟可能差几十毫秒，所以多建几个轮流挂上去测，留最快的，其余删掉。' 'Azure has no "change IP" button: you create a new public IP and attach it; the address is random. Latency can differ by tens of ms, so this tries a few in turn, keeps the fastest and deletes the rest.')"
+
+  nic_id=$(azs vm show -g "$RG" -n "$VM" --query "networkProfile.networkInterfaces[0].id" -o tsv)
+  read -r cfg old_id < <(az network nic show --ids "$nic_id" --query "ipConfigurations[?primary].[name,publicIPAddress.id]" -o tsv)
+  [ -n "${old_id:-}" ] && [ "$old_id" != None ] || die "$(t '这台机器的主网卡上没有公网 IP。' 'The primary NIC has no public IP.')"
+  IP_CFG_ID="$nic_id/ipConfigurations/$cfg"
+  old_ip=$(az network public-ip show --ids "$old_id" --query ipAddress -o tsv)
+  loc=$(azs vm show -g "$RG" -n "$VM" --query location -o tsv)
+  zone=$(azs vm show -g "$RG" -n "$VM" --query "zones[0]" -o tsv)
+  { read -r used; read -r lim; } < <(azs network list-usages -l "$loc" --query "[?name.value=='PublicIPAddresses'] | [0].[currentValue,limit]" -o tsv)
+  free=$(( ${lim:-0} - ${used:-0} ))
+  info "$(t '现在的公网 IP' 'Current public IP'): $old_ip  (${old_id##*/})"
+  info "$(t "这个区域公网 IP 配额：已用 $used / 共 $lim" "Public IP quota in this region: $used of $lim used")"
+  [ "$free" -ge 1 ] || die "$(t '配额满了，建不了新 IP。先在控制台删掉不用的公网 IP 再来。' 'Quota is full; delete unused public IPs in the portal first.')"
+
+  # 测延迟的办法：从运行脚本的电脑连 22 端口。先确认网络没被代理/加速器接管：没开放的端口如果也"连得上"，数字就是假的
+  IP_PORT=22; IP_MANUAL=""
+  if [ -n "$(curl -s -o /dev/null --noproxy '*' --connect-timeout 3 --max-time 3 -w '%{time_connect}' "telnet://$old_ip:9" </dev/null 2>/dev/null | awk '$1>0')" ]; then
+    warn "$(t '你的网络像是经过了代理或加速器（连没开放的端口也能"连上"），在这台电脑上自动测出的延迟不可信。' 'Your network seems to go through a proxy (even a closed port "connects"), so automatic results here would be fake.')"
+    info "$(t '  改成手动：每换上一个 IP，脚本会停下来显示地址，你用自己的办法（比如关掉代理后 ping，或在别的机器上测）测完把毫秒数填进来。也可以关掉代理后重新运行，或者在 Cloud Shell 里运行（测的是 Azure 机房到机器的距离）。' '  Switching to manual: after each IP is attached the script pauses; measure it your own way and type the ms. Or rerun without the proxy, or in Cloud Shell.')"
+    IP_MANUAL=1
+  else
+    ms=$(tcp_ms "$old_ip" 22)
+    if [ -z "$ms" ]; then
+      warn "$(t '从这台电脑连不上 22 端口（学校、公司网络常见）。' 'Cannot reach port 22 from here (common on school/office networks).')"
+      IP_PORT=$(ask "$(t '换个已开放的端口来测' 'Another open port to test')" 443)
+      ms=$(tcp_ms "$old_ip" "$IP_PORT")
+      [ -n "$ms" ] || { warn "$(t "$IP_PORT 也连不上，改成手动填延迟。" "Port $IP_PORT is unreachable too; switching to manual input.")"; IP_MANUAL=1; }
+    fi
+    in_cloud_shell && info "$(t '（在 Cloud Shell 里，测的是 Azure 机房到机器的延迟，不等于你自己电脑上的体验）' '(In Cloud Shell this measures from an Azure datacenter, not from your computer)')"
+  fi
+  [ -n "$IP_MANUAL" ] && ms=$(measure "$old_ip")
+  ids=("$old_id"); names=("${old_id##*/}"); addrs=("$old_ip"); mss=("${ms:-}")
+  info "$(t '现在这个 IP 的延迟' 'Latency of the current IP'): ${ms:-?} ms"
+
+  n=$(ask "$(t "试几个新 IP（1-${free}）" "How many new IPs to try (1-$free)")" "$free")
+  [[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "$free" ] || n=$free
+  made=$(date +%m%d%H%M)
+
+  say "$(t '演练：将要执行的命令' 'Dry run: commands to execute')"
+  for i in $(seq 1 "$n"); do
+    info "  az network public-ip create --subscription \"$SUB_ID\" -g $RG -n $VM-ip-$made-$i -l $loc --sku Standard --allocation-method Static --version IPv4${zone:+ --zone $zone}"
+    info "  az network nic ip-config update --ids $IP_CFG_ID --public-ip-address <$VM-ip-$made-$i>   # $(t '换上去测延迟' 'attach and measure')"
+  done
+  info "  $(t '然后换上你选的那个，再删掉没选中的（删之前会列出来让你确认）' 'then attach the one you pick and delete the rest (listed for confirmation first)')"
+  warn "$(t "每换一次 IP，机器的网络会断几秒到几十秒，正在用的连接（ssh、代理）都会断。总共大约 $((n + 1)) 次。" "Each swap drops the VM's connections for seconds to tens of seconds, about $((n + 1)) times in total.")"
+  info "$(t "新 IP 按小时收费（Standard 静态 IP 约每小时 0.005 美元），测完删掉就不再收。" "New IPs bill hourly (about \$0.005/hour each) until deleted.")"
+  [ -n "$OPT_DRY" ] && { info "$(t '（--dry-run：只演练，什么都没改）' '(--dry-run: nothing changed)')"; exit 0; }
+  [ -n "${NO_TTY:-}" ] && [ -z "$OPT_YES" ] && die "$(t '没有终端确认，要直接执行请加 --yes' 'No terminal to confirm; add --yes')"
+  [ -n "$OPT_YES" ] || confirm "$(t '开始' 'Start')" || { info "$(t '已取消，什么都没改。' 'Cancelled; nothing changed.')"; return; }
+
+  # 中途出错或按 Ctrl+C：换回原来的 IP，再问要不要删掉这次建的
+  err=$(mktemp)
+  trap 'IP_ABORT=1' INT
+  IP_ABORT=""
+  for i in $(seq 1 "$n"); do
+    name="$VM-ip-$made-$i"
+    info "$(t "[$i/$n] 新建 ${name}……" "[$i/$n] Creating $name...")"
+    { read -r k; read -r addr; } < <(azs network public-ip create -g "$RG" -n "$name" -l "$loc" --sku Standard --allocation-method Static --version IPv4 ${zone:+--zone "$zone"} \
+      --query "publicIp.[id,ipAddress]" -o tsv 2>"$err") || { explain_error "$err"; break; }
+    ids+=("$k"); names+=("$name"); addrs+=("$addr"); mss+=("")
+    [ -n "$IP_ABORT" ] && break
+    info "$(t "  地址 ${addr}，换到机器上……" "  Address $addr, attaching...")"
+    attach_ip "$k" 2>"$err" || { explain_error "$err"; break; }
+    mss[${#mss[@]}-1]=$(measure "$addr")
+    info "  $addr: ${mss[${#mss[@]}-1]:-?} ms"
+    [ -n "$IP_ABORT" ] && break
+  done
+  trap - INT
+  rm -f "$err"
+
+  # 挑：默认延迟最低的
+  best=1; k=""
+  for i in "${!ids[@]}"; do
+    labels+=("$(printf '%-16s %-30s %s' "${addrs[$i]}" "${names[$i]}" "${mss[$i]:-?} ms")$([ "$i" = 0 ] && t '  ← 原来的' '  ← original')")
+    [ -n "${mss[$i]}" ] && { [ -z "$k" ] || [ "${mss[$i]}" -lt "$k" ]; } && { k=${mss[$i]}; best=$((i + 1)); }
+  done
+  if [ -n "$IP_ABORT" ]; then
+    warn "$(t '已中断，换回原来的 IP。' 'Interrupted; restoring the original IP.')"; best=1
+  else
+    best=$(pick "$(t '留哪个（→ 是延迟最低的）：' 'Which one to keep (→ is the fastest):')" "$best" "${labels[@]}")
+  fi
+  i=$((best - 1))
+  info "$(t "换上 ${addrs[$i]}……" "Attaching ${addrs[$i]}...")"
+  attach_ip "${ids[$i]}" || die "$(t "换回失败。请在控制台把网卡 ${nic_id##*/} 的公网 IP 设成 ${names[$i]}。" "Attach failed. In the portal, set the public IP of NIC ${nic_id##*/} to ${names[$i]}.")"
+  ok "$(t "公网 IP 现在是 ${addrs[$i]}（${names[$i]}）" "Public IP is now ${addrs[$i]} (${names[$i]})")"
+
+  # 删：没选中的新 IP 一组确认，原来的 IP 单独确认（有人想留着当备用）
+  for k in "${!ids[@]}"; do [ "$k" != 0 ] && [ "$k" != "$i" ] && del+=("$k"); done
+  if [ ${#del[@]} -gt 0 ]; then
+    info "$(t '没选中的新 IP（留着会按小时收费）：' 'Unpicked new IPs (they bill hourly):')"
+    for k in "${del[@]}"; do info "    ${names[$k]}  ${addrs[$k]}"; done
+    if confirm "$(t '删掉这些' 'Delete these')"; then
+      for k in "${del[@]}"; do az network public-ip delete --ids "${ids[$k]}" && ok "$(t '已删除' 'Deleted') ${names[$k]}"; done
+    else info "$(t '没删。以后在控制台「公网 IP 地址」里删。' 'Kept. Delete them later under Public IP addresses in the portal.')"; fi
+  fi
+  if [ "$i" != 0 ]; then
+    info "$(t '原来的 IP' 'Original IP'): ${names[0]}  ${addrs[0]}"
+    if confirm "$(t '删掉原来的 IP（删了这个地址就找不回来了）' 'Delete the original IP (the address cannot be recovered)')"; then
+      az network public-ip delete --ids "${ids[0]}" && ok "$(t '已删除' 'Deleted') ${names[0]}"
+    else info "$(t '原来的 IP 留着，没挂在机器上也照样按小时收费。' 'Original IP kept; it still bills hourly while unattached.')"; fi
+    info ""
+    warn "$(t '地址变了，别忘了改用到旧地址的地方：' 'The address changed; update everything that used the old one:')"
+    info "$(t "  · 域名的 A 记录：${addrs[0]} → ${addrs[$i]}" "  · DNS A record: ${addrs[0]} → ${addrs[$i]}")"
+    info "$(t '  · ~/.ssh/config 里的 HostName；写 IP 的代理客户端链接' '  · HostName in ~/.ssh/config; proxy client links that use the IP')"
   fi
 }
 
@@ -613,7 +762,7 @@ in_cloud_shell && info "$(t '检测到 Cloud Shell。' 'Running in Cloud Shell.'
 choose_subscription
 ensure_compute
 if [ -z "$OPT_MODE" ]; then
-  case $(pick "$(t '要做什么：' 'What do you want to do:')" 1 "$(t '开一台新机器' 'Create a VM')" "$(t '管理已有机器（登录、停止、启动、删除）' 'Manage VMs (login, stop, start, delete)')" "$(t '查本月花费和剩余额度' 'Check cost and credit')") in
+  case $(pick "$(t '要做什么：' 'What do you want to do:')" 1 "$(t '开一台新机器' 'Create a VM')" "$(t '管理已有机器（登录、停止、启动、换 IP、删除）' 'Manage VMs (login, stop, start, change IP, delete)')" "$(t '查本月花费和剩余额度' 'Check cost and credit')") in
     1) OPT_MODE=create ;; 2) OPT_MODE=manage ;; 3) OPT_MODE=cost ;;
   esac
 fi
