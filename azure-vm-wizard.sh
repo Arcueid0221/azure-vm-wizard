@@ -617,15 +617,32 @@ wait_up() {
 # measure IP：自动测，或者（网络被代理接管时）让用户自己测了填进来
 measure() {
   if [ -n "$IP_MANUAL" ]; then
-    read_in "$(t "  现在挂的是 $1，用你自己的办法测延迟，输入毫秒数（回车 = 跳过）: " "  Now on $1. Measure it yourself and enter ms (Enter = skip): ")" | tr -cd '0-9'
+    read_in "$(t "  现在挂的是 $1（刚换上的要等半分钟左右才通），用你自己的办法测延迟，输入毫秒数（回车 = 跳过）: " "  Now on $1 (a new one takes ~30 s to come up). Measure it yourself and enter ms (Enter = skip): ")" | tr -cd '0-9'
   else
-    wait_up "$1" "$IP_PORT" || { warn "$(t "  $1 两分钟内没连上" "  $1 not reachable within 2 minutes")"; return; }
+    if ! wait_up "$1" "$IP_PORT"; then
+      # 别的机器能连、这台电脑连不上的情况实测遇到过（本地网络问题），所以让用户自己测
+      warn "$(t "  从这台电脑两分钟内没连上 ${1}，可能是你本地网络的问题。" "  $1 not reachable from here within 2 minutes; may be your local network.")"
+      read_in "$(t '  在别的机器上测一下，输入毫秒数（回车 = 跳过）: ' '  Measure it from another machine and enter ms (Enter = skip): ')" | tr -cd '0-9'
+      return
+    fi
     tcp_ms "$1" "$IP_PORT"
   fi
 }
 
 # 把机器的主网卡配置指向某个公网 IP（节点会断几秒到几十秒）
-attach_ip() { az network nic ip-config update --ids "$IP_CFG_ID" --public-ip-address "$1" -o none; }
+# （ip-config update 不认 --ids，只能拆成资源组、网卡名、配置名）
+# 网络抖动时命令可能报错但其实已经换上了，所以失败后先查实际状态，没换上再重试，最多 3 次
+attach_ip() {
+  local i cur
+  for i in 1 2 3; do
+    az network nic ip-config update --subscription "$SUB_ID" -g "$IP_NIC_RG" --nic-name "$IP_NIC" -n "$IP_CFG" --public-ip-address "$1" -o none && return 0
+    sleep 3
+    cur=$(az network nic ip-config show --subscription "$SUB_ID" -g "$IP_NIC_RG" --nic-name "$IP_NIC" -n "$IP_CFG" --query publicIPAddress.id -o tsv 2>/dev/null)
+    [ "$(tr '[:upper:]' '[:lower:]' <<<"$cur")" = "$(tr '[:upper:]' '[:lower:]' <<<"$1")" ] && return 0
+    [ "$i" -lt 3 ] && warn "$(t '没换成功，重试……' 'Attach failed, retrying...')"
+  done
+  return 1
+}
 
 change_ip() {
   local nic_id cfg old_id old_ip zone loc used lim free n i k best err name made ms addr
@@ -636,7 +653,8 @@ change_ip() {
   nic_id=$(azs vm show -g "$RG" -n "$VM" --query "networkProfile.networkInterfaces[0].id" -o tsv)
   read -r cfg old_id < <(az network nic show --ids "$nic_id" --query "ipConfigurations[?primary].[name,publicIPAddress.id]" -o tsv)
   [ -n "${old_id:-}" ] && [ "$old_id" != None ] || die "$(t '这台机器的主网卡上没有公网 IP。' 'The primary NIC has no public IP.')"
-  IP_CFG_ID="$nic_id/ipConfigurations/$cfg"
+  IP_NIC=${nic_id##*/}; IP_CFG=$cfg
+  IP_NIC_RG=$(sed -E 's#.*/resourceGroups/([^/]+)/.*#\1#' <<<"$nic_id")
   old_ip=$(az network public-ip show --ids "$old_id" --query ipAddress -o tsv)
   loc=$(azs vm show -g "$RG" -n "$VM" --query location -o tsv)
   zone=$(azs vm show -g "$RG" -n "$VM" --query "zones[0]" -o tsv)
@@ -673,7 +691,7 @@ change_ip() {
   say "$(t '演练：将要执行的命令' 'Dry run: commands to execute')"
   for i in $(seq 1 "$n"); do
     info "  az network public-ip create --subscription \"$SUB_ID\" -g $RG -n $VM-ip-$made-$i -l $loc --sku Standard --allocation-method Static --version IPv4${zone:+ --zone $zone}"
-    info "  az network nic ip-config update --ids $IP_CFG_ID --public-ip-address <$VM-ip-$made-$i>   # $(t '换上去测延迟' 'attach and measure')"
+    info "  az network nic ip-config update --subscription \"$SUB_ID\" -g $IP_NIC_RG --nic-name $IP_NIC -n $IP_CFG --public-ip-address $VM-ip-$made-$i   # $(t '换上去测延迟' 'attach and measure')"
   done
   info "  $(t '然后换上你选的那个，再删掉没选中的（删之前会列出来让你确认）' 'then attach the one you pick and delete the rest (listed for confirmation first)')"
   warn "$(t "每换一次 IP，机器的网络会断几秒到几十秒，正在用的连接（ssh、代理）都会断。总共大约 $((n + 1)) 次。" "Each swap drops the VM's connections for seconds to tens of seconds, about $((n + 1)) times in total.")"
